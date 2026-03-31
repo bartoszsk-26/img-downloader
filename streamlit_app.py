@@ -119,7 +119,7 @@ try:
             product_col = df.columns[0]
             st.warning("Product column not detected — using first column.")
 
-        st.success(f"Using product column: {product_col}")
+        st.success(f"Let’s get started with: {product_col}")
 
         if st.button("🚀 Start Download"):
 
