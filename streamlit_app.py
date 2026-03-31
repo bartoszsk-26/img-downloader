@@ -2,7 +2,7 @@ import streamlit as st
 
 # ---------- ALWAYS RENDER UI FIRST ----------
 st.set_page_config(page_title="CSV Image Downloader", layout="wide")
-st.title("📦 CSV Image Downloader")
+st.title("Image Downloader")
 st.write("Upload CSV → download images → ZIP export")
 
 # ---------- SAFE IMPORTS ----------
