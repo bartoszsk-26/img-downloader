@@ -1,6 +1,6 @@
 import streamlit as st
 
-# ---------- ALWAYS RENDER UI FIRST ----------
+# ---------- UI FIRST ----------
 st.set_page_config(page_title="CSV Image Downloader", layout="wide")
 st.title("Image Downloader")
 st.write("Upload CSV → download images → ZIP export")
@@ -15,7 +15,7 @@ try:
     from urllib.parse import urlparse
     from PIL import Image, UnidentifiedImageError
 except Exception as e:
-    st.error("❌ Import error (very important):")
+    st.error("Import error:")
     st.exception(e)
     st.stop()
 
@@ -26,7 +26,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept": "*/*",
 }
-
 
 # ---------- HELPERS ----------
 def safe_filename(name):
@@ -41,37 +40,25 @@ def is_valid_url(url):
         return False
 
 
-# ⭐ BULLETPROOF IMAGE DOWNLOADER
 def download_image_bytes(url):
-
     try:
         r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         r.raise_for_status()
 
-        data = r.content
-
-        try:
-            img = Image.open(BytesIO(data))
-            img.load()
-        except UnidentifiedImageError:
-            return None, "Not image"
+        img = Image.open(BytesIO(r.content))
+        img.load()
 
         fmt = (img.format or "").lower()
 
-        # ---- FORMAT HANDLING ----
         if fmt in ["jpeg", "jpg"]:
             ext = "jpg"
-
         elif fmt == "png":
             ext = "png"
-
         elif fmt == "webp":
             ext = "webp"
-
         elif fmt in ["tiff", "tif"]:
             img = img.convert("RGB")
             ext = "jpg"
-
         else:
             img = img.convert("RGB")
             ext = "jpg"
@@ -87,9 +74,10 @@ def download_image_bytes(url):
             img.save(buffer, ext.upper())
 
         buffer.seek(0)
-
         return buffer.read(), ext
 
+    except UnidentifiedImageError:
+        return None, "Not image"
     except Exception as e:
         return None, str(e)
 
@@ -99,20 +87,16 @@ try:
 
     uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
 
-    if uploaded_file:
+    if uploaded_file is not None:
 
+        # ---- LOAD CSV ----
         df = pd.read_csv(uploaded_file)
 
-# clean text columns (modern pandas-safe)
-for col in df.select_dtypes(include="object"):
-    df[col] = df[col].str.strip().str.replace("\u200b", "", regex=False)
+        # ---- CLEAN TEXT COLUMNS (pandas 2/3 safe) ----
+        for col in df.select_dtypes(include="object"):
+            df[col] = df[col].str.strip().str.replace("\u200b", "", regex=False)
 
-        df = df.applymap(
-            lambda x: str(x).strip().replace("\u200b", "")
-            if isinstance(x, str)
-            else x
-        )
-
+        # ---- DETECT PRODUCT COLUMN ----
         product_col = None
         for col in df.columns:
             if any(k in col.lower() for k in ["name", "product", "title", "item"]):
@@ -123,8 +107,9 @@ for col in df.select_dtypes(include="object"):
             product_col = df.columns[0]
             st.warning("Product column not detected — using first column.")
 
-        st.success(f"Let’s get started with: {product_col}")
+        st.success(f"Using column: {product_col}")
 
+        # ---- START BUTTON ----
         if st.button("🚀 Start Download"):
 
             progress = st.progress(0)
@@ -161,7 +146,7 @@ for col in df.select_dtypes(include="object"):
                         total += 1
                         status.text(f"Downloading {total}")
 
-                        data, result = download_image_bytes(url)
+                        data, ext = download_image_bytes(url)
 
                         if data:
                             name = (
@@ -170,12 +155,12 @@ for col in df.select_dtypes(include="object"):
                                 else product_name
                             )
 
-                            zipf.writestr(f"{name}.{result}", data)
+                            zipf.writestr(f"{name}.{ext}", data)
 
                             image_count += 1
                             success += 1
                         else:
-                            errors.append(f"{url} → {result}")
+                            errors.append(f"{url} → {ext}")
 
                     progress.progress((i + 1) / rows)
 
@@ -200,5 +185,5 @@ for col in df.select_dtypes(include="object"):
             )
 
 except Exception as e:
-    st.error("❌ Runtime error:")
+    st.error("Runtime error:")
     st.exception(e)
