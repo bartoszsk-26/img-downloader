@@ -103,6 +103,10 @@ try:
 
         df = pd.read_csv(uploaded_file)
 
+# clean text columns (modern pandas-safe)
+for col in df.select_dtypes(include="object"):
+    df[col] = df[col].str.strip().str.replace("\u200b", "", regex=False)
+
         df = df.applymap(
             lambda x: str(x).strip().replace("\u200b", "")
             if isinstance(x, str)
