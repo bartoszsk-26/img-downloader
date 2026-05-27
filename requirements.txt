@@ -1,4 +1,4 @@
 streamlit
 requests
-pandas>=2.2,<3
-pillow<11
+pandas>=2.2
+pillow>=11
