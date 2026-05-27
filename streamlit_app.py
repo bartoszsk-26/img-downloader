@@ -17,6 +17,9 @@ from PIL import (
     ImageOps,
     UnidentifiedImageError,
 )
+from PIL import ImageFile
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # Supplier feeds contain broken TIFFs surprisingly often.
 ImageFile.LOAD_TRUNCATED_IMAGES = True
