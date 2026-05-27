@@ -1,25 +1,23 @@
-import streamlit as st
+import os
+import re
+import zipfile
+import tempfile
+from io import BytesIO
+from urllib.parse import urlparse
 
-# ---------- UI FIRST ----------
-st.set_page_config(page_title="CSV Image Downloader", layout="wide")
+import pandas as pd
+import requests
+import streamlit as st
+from PIL import Image, ImageOps, UnidentifiedImageError
+
+st.set_page_config(
+    page_title="Image Downloader",
+    layout="wide"
+)
+
 st.title("Image Downloader")
 st.write("Upload CSV → download images → ZIP export")
 
-# ---------- SAFE IMPORTS ----------
-try:
-    import pandas as pd
-    import requests
-    import re
-    import zipfile
-    from io import BytesIO
-    from urllib.parse import urlparse
-    from PIL import Image, UnidentifiedImageError
-except Exception as e:
-    st.error("Import error:")
-    st.exception(e)
-    st.stop()
-
-# ---------- CONFIG ----------
 REQUEST_TIMEOUT = 30
 
 HEADERS = {
@@ -27,163 +25,306 @@ HEADERS = {
     "Accept": "*/*",
 }
 
-# ---------- HELPERS ----------
-def safe_filename(name):
-    return re.sub(r'[<>:"/\\|?*\n\r\t]', "_", str(name).strip())
+
+def safe_filename(value):
+    value = str(value).strip()
+
+    return re.sub(
+        r'[<>:"/\\|?*\n\r\t]',
+        "_",
+        value
+    )
 
 
 def is_valid_url(url):
     try:
         parsed = urlparse(str(url))
-        return parsed.scheme in ("http", "https") and parsed.netloc
-    except:
+
+        return (
+            parsed.scheme in ("http", "https")
+            and parsed.netloc
+        )
+
+    except Exception:
         return False
 
 
-def download_image_bytes(url):
+def prepare_image(image, fmt):
+    fmt = (fmt or "").lower()
+
+    if fmt in ("jpeg", "jpg"):
+        ext = "jpg"
+
+    elif fmt in ("png", "webp", "avif"):
+        # PNG output avoids weird alpha artifacts from vendor assets
+        ext = "png"
+
+    elif fmt in ("tiff", "tif"):
+        ext = "jpg"
+
+    else:
+        ext = "jpg"
+
+    # Vendor feeds often contain transparent packshots.
+    # White background looks better for marketplaces and PDFs.
+    if image.mode in ("RGBA", "LA"):
+        background = Image.new(
+            "RGB",
+            image.size,
+            (255, 255, 255)
+        )
+
+        alpha = image.getchannel("A")
+        background.paste(image, mask=alpha)
+
+        image = background
+
+    elif image.mode == "P":
+        image = image.convert("RGBA")
+
+        background = Image.new(
+            "RGB",
+            image.size,
+            (255, 255, 255)
+        )
+
+        alpha = image.getchannel("A")
+        background.paste(image, mask=alpha)
+
+        image = background
+
+    elif image.mode != "RGB" and ext == "jpg":
+        image = image.convert("RGB")
+
+    return image, ext
+
+
+def download_image(url):
     try:
-        r = requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
-        r.raise_for_status()
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=REQUEST_TIMEOUT,
+            allow_redirects=True,
+        )
 
-        img = Image.open(BytesIO(r.content))
-        img.load()
+        response.raise_for_status()
 
-        fmt = (img.format or "").lower()
+        if not response.content:
+            return None, None, "Empty response"
 
-        if fmt in ["jpeg", "jpg"]:
-            ext = "jpg"
-        elif fmt == "png":
-            ext = "png"
-        elif fmt == "webp":
-            ext = "webp"
-        elif fmt in ["tiff", "tif"]:
-            img = img.convert("RGB")
-            ext = "jpg"
-        else:
-            img = img.convert("RGB")
-            ext = "jpg"
+        image = Image.open(BytesIO(response.content))
+        image.load()
 
-        if ext == "jpg" and img.mode != "RGB":
-            img = img.convert("RGB")
+        image = ImageOps.exif_transpose(image)
+
+        image, ext = prepare_image(
+            image,
+            image.format
+        )
 
         buffer = BytesIO()
 
         if ext == "jpg":
-            img.save(buffer, "JPEG", quality=95)
+            image.save(
+                buffer,
+                format="JPEG",
+                quality=95,
+                optimize=True,
+            )
+
         else:
-            img.save(buffer, ext.upper())
+            image.save(
+                buffer,
+                format="PNG",
+                optimize=True,
+            )
 
         buffer.seek(0)
-        return buffer.read(), ext
+
+        return buffer.read(), ext, None
 
     except UnidentifiedImageError:
-        return None, "Not image"
+        return None, None, "Unsupported image"
+
+    except requests.exceptions.RequestException as e:
+        return None, None, str(e)
+
     except Exception as e:
-        return None, str(e)
+        return None, None, str(e)
 
 
-# ---------- APP ----------
-try:
+def detect_product_column(columns):
+    candidates = [
+        "name",
+        "product_name",
+        "product",
+        "item",
+        "title",
+    ]
 
-    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
+    for col in columns:
+        lowered = col.lower()
 
-    if uploaded_file is not None:
+        if any(x in lowered for x in candidates):
+            return col
 
-        # ---- LOAD CSV ----
+    return columns[0]
+
+
+uploaded_file = st.file_uploader(
+    "Upload CSV",
+    type=["csv"]
+)
+
+if uploaded_file is not None:
+
+    try:
         df = pd.read_csv(uploaded_file)
 
-        # ---- CLEAN TEXT COLUMNS (pandas 2/3 safe) ----
-        for col in df.select_dtypes(include="object"):
-            df[col] = df[col].str.strip().str.replace("\u200b", "", regex=False)
+    except Exception as e:
+        st.error(f"CSV error: {e}")
+        st.stop()
 
-        # ---- DETECT PRODUCT COLUMN ----
-        product_col = None
-        for col in df.columns:
-            if any(k in col.lower() for k in ["name", "product", "title", "item"]):
-                product_col = col
-                break
+    for col in df.select_dtypes(include=["object", "string"]):
+        df[col] = (
+            df[col]
+            .astype(str)
+            .str.strip()
+            .str.replace("\u200b", "", regex=False)
+        )
 
-        if product_col is None:
-            product_col = df.columns[0]
-            st.warning("Product column not detected — using first column.")
+    product_column = detect_product_column(df.columns)
 
-        st.success(f"Using column: {product_col}")
+    st.success(f"Using product column: {product_column}")
 
-        # ---- START BUTTON ----
-        if st.button("🚀 Start Download"):
+    if st.button("Start download"):
 
-            progress = st.progress(0)
-            status = st.empty()
+        progress = st.progress(0)
+        status = st.empty()
 
-            zip_buffer = BytesIO()
+        total_urls = 0
+        downloaded = 0
+        skipped = 0
 
-            total = 0
-            success = 0
-            errors = []
+        error_rows = []
 
-            with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zipf:
+        with tempfile.TemporaryDirectory() as temp_dir:
 
-                rows = len(df)
+            zip_path = os.path.join(
+                temp_dir,
+                "images.zip"
+            )
 
-                for i, (_, row) in enumerate(df.iterrows()):
+            with zipfile.ZipFile(
+                zip_path,
+                "w",
+                compression=zipfile.ZIP_DEFLATED,
+            ) as zipf:
 
-                    product_name = safe_filename(row[product_col])
-                    image_count = 0
+                total_rows = len(df)
+
+                for row_index, (_, row) in enumerate(df.iterrows()):
+
+                    product_name = safe_filename(
+                        row[product_column]
+                    )
+
+                    image_index = 0
 
                     for col in df.columns:
 
-                        if col == product_col:
+                        if col == product_column:
                             continue
 
-                        url = row[col]
+                        image_url = row[col]
 
-                        if pd.isnull(url) or not str(url).strip():
+                        if pd.isna(image_url):
                             continue
 
-                        if not is_valid_url(url):
+                        image_url = str(image_url).strip()
+
+                        if not image_url:
                             continue
 
-                        total += 1
-                        status.text(f"Downloading {total}")
+                        total_urls += 1
 
-                        data, ext = download_image_bytes(url)
+                        if not is_valid_url(image_url):
+                            skipped += 1
 
-                        if data:
-                            name = (
-                                f"{product_name}_{image_count}"
-                                if image_count > 0
-                                else product_name
-                            )
+                            error_rows.append({
+                                "row": row_index,
+                                "url": image_url,
+                                "error": "Invalid URL",
+                            })
 
-                            zipf.writestr(f"{name}.{ext}", data)
+                            continue
 
-                            image_count += 1
-                            success += 1
-                        else:
-                            errors.append(f"{url} → {ext}")
+                        status.text(
+                            f"Downloading {downloaded + skipped + 1} / {total_urls}"
+                        )
 
-                    progress.progress((i + 1) / rows)
+                        image_bytes, ext, error = download_image(image_url)
 
-            zip_buffer.seek(0)
+                        if error:
+                            skipped += 1
 
-            st.success("✅ Finished")
+                            error_rows.append({
+                                "row": row_index,
+                                "url": image_url,
+                                "error": error,
+                            })
+
+                            continue
+
+                        filename = (
+                            f"{product_name}_{image_index}"
+                            if image_index > 0
+                            else product_name
+                        )
+
+                        temp_image_path = os.path.join(
+                            temp_dir,
+                            f"{filename}.{ext}"
+                        )
+
+                        with open(temp_image_path, "wb") as f:
+                            f.write(image_bytes)
+
+                        zipf.write(
+                            temp_image_path,
+                            arcname=f"{filename}.{ext}"
+                        )
+
+                        downloaded += 1
+                        image_index += 1
+
+                    progress.progress(
+                        (row_index + 1) / total_rows
+                    )
+
+            st.success("Finished")
 
             c1, c2, c3 = st.columns(3)
-            c1.metric("Found", total)
-            c2.metric("Downloaded", success)
-            c3.metric("Errors", len(errors))
 
-            if errors:
+            c1.metric("URLs found", total_urls)
+            c2.metric("Downloaded", downloaded)
+            c3.metric("Skipped", skipped)
+
+            if error_rows:
                 with st.expander("Errors"):
-                    st.write(errors[:200])
 
-            st.download_button(
-                "⬇ Download ZIP",
-                zip_buffer,
-                "images.zip",
-                "application/zip",
-            )
+                    error_df = pd.DataFrame(error_rows)
 
-except Exception as e:
-    st.error("Runtime error:")
-    st.exception(e)
+                    st.dataframe(
+                        error_df,
+                        use_container_width=True
+                    )
+
+            with open(zip_path, "rb") as f:
+                st.download_button(
+                    "Download ZIP",
+                    data=f,
+                    file_name="images.zip",
+                    mime="application/zip",
+                )
