@@ -2,28 +2,50 @@ import os
 import re
 import zipfile
 import tempfile
+import warnings
+
 from io import BytesIO
 from urllib.parse import urlparse
 
 import pandas as pd
 import requests
 import streamlit as st
-from PIL import Image, ImageOps, UnidentifiedImageError
+
+from PIL import (
+    Image,
+    ImageFile,
+    ImageOps,
+    UnidentifiedImageError,
+)
+
+# Supplier feeds contain broken TIFFs surprisingly often.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+
+warnings.filterwarnings(
+    "ignore",
+    category=UserWarning,
+    module="PIL.TiffImagePlugin"
+)
 
 st.set_page_config(
     page_title="Image Downloader",
-    layout="wide"
+    layout="wide",
 )
 
 st.title("Image Downloader")
 st.write("Upload CSV → download images → ZIP export")
 
-REQUEST_TIMEOUT = 30
+REQUEST_TIMEOUT = 20
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept": "*/*",
 }
+
+# Prevent decompression bombs and giant memory spikes.
+MAX_IMAGE_PIXELS = 80_000_000
+
+Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
 
 
 def safe_filename(value):
@@ -49,14 +71,30 @@ def is_valid_url(url):
         return False
 
 
-def prepare_image(image, fmt):
-    fmt = (fmt or "").lower()
+def flatten_transparency(image):
+    background = Image.new(
+        "RGB",
+        image.size,
+        (255, 255, 255)
+    )
+
+    if image.mode in ("RGBA", "LA"):
+        alpha = image.getchannel("A")
+        background.paste(image, mask=alpha)
+
+    else:
+        background.paste(image)
+
+    return background
+
+
+def prepare_image(image):
+    fmt = (image.format or "").lower()
 
     if fmt in ("jpeg", "jpg"):
         ext = "jpg"
 
     elif fmt in ("png", "webp", "avif"):
-        # PNG output avoids weird alpha artifacts from vendor assets
         ext = "png"
 
     elif fmt in ("tiff", "tif"):
@@ -65,36 +103,27 @@ def prepare_image(image, fmt):
     else:
         ext = "jpg"
 
-    # Vendor feeds often contain transparent packshots.
-    # White background looks better for marketplaces and PDFs.
     if image.mode in ("RGBA", "LA"):
-        background = Image.new(
-            "RGB",
-            image.size,
-            (255, 255, 255)
-        )
-
-        alpha = image.getchannel("A")
-        background.paste(image, mask=alpha)
-
-        image = background
+        image = flatten_transparency(image)
 
     elif image.mode == "P":
-        image = image.convert("RGBA")
-
-        background = Image.new(
-            "RGB",
-            image.size,
-            (255, 255, 255)
+        image = flatten_transparency(
+            image.convert("RGBA")
         )
 
-        alpha = image.getchannel("A")
-        background.paste(image, mask=alpha)
-
-        image = background
-
-    elif image.mode != "RGB" and ext == "jpg":
+    elif image.mode != "RGB":
         image = image.convert("RGB")
+
+    # Large TIFFs from DAM systems are usually absurdly oversized.
+    max_dimension = 4000
+
+    if (
+        image.width > max_dimension
+        or image.height > max_dimension
+    ):
+        image.thumbnail(
+            (max_dimension, max_dimension)
+        )
 
     return image, ext
 
@@ -105,23 +134,30 @@ def download_image(url):
             url,
             headers=HEADERS,
             timeout=REQUEST_TIMEOUT,
+            stream=True,
             allow_redirects=True,
         )
 
         response.raise_for_status()
 
-        if not response.content:
+        content_length = response.headers.get("Content-Length")
+
+        # Skip absurd files before loading into memory.
+        if content_length:
+            if int(content_length) > 80 * 1024 * 1024:
+                return None, None, "File too large"
+
+        raw = response.content
+
+        if not raw:
             return None, None, "Empty response"
 
-        image = Image.open(BytesIO(response.content))
-        image.load()
+        image = Image.open(BytesIO(raw))
 
+        # EXIF rotation before conversion avoids weird orientation bugs.
         image = ImageOps.exif_transpose(image)
 
-        image, ext = prepare_image(
-            image,
-            image.format
-        )
+        image, ext = prepare_image(image)
 
         buffer = BytesIO()
 
@@ -129,7 +165,7 @@ def download_image(url):
             image.save(
                 buffer,
                 format="JPEG",
-                quality=95,
+                quality=90,
                 optimize=True,
             )
 
@@ -148,6 +184,10 @@ def download_image(url):
         return None, None, "Unsupported image"
 
     except requests.exceptions.RequestException as e:
+        return None, None, str(e)
+
+    except OSError as e:
+        # Pillow throws OSError on damaged TIFFs.
         return None, None, str(e)
 
     except Exception as e:
@@ -261,7 +301,7 @@ if uploaded_file is not None:
                             continue
 
                         status.text(
-                            f"Downloading {downloaded + skipped + 1} / {total_urls}"
+                            f"Downloaded: {downloaded} | Skipped: {skipped}"
                         )
 
                         image_bytes, ext, error = download_image(image_url)
@@ -318,7 +358,7 @@ if uploaded_file is not None:
 
                     st.dataframe(
                         error_df,
-                        use_container_width=True
+                        width="stretch",
                     )
 
             with open(zip_path, "rb") as f:
