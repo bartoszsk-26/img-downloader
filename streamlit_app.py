@@ -268,30 +268,34 @@ if uploaded_file is not None:
         for row_index, (_, row) in enumerate(df.iterrows()):
             # Duplicate product names get a stable suffix (deterministic for a
             # given CSV, so resume still works) instead of overwriting.
-            base = safe_filename(row[product_column]) or f"row_{row_index}"
-            dup = name_counts.get(base, 0)      # 0 = first occurrence
-            name_counts[base] = dup + 1
-            product_name = base
+            product_name = safe_filename(row[product_column]) or f"row_{row_index}"
+            dup = name_counts.get(product_name, 0)  # 0 = first occurrence
+            name_counts[product_name] = dup + 1
 
             image_index = 0
 
             for col in df.columns:
-                ...
-                total_urls += 1
+                if col == product_column:
+                    continue
 
-                if dup == 0:
-                    filename = product_name if image_index == 0 else f"{product_name}_{image_index}"
-                else:
-                    filename = f"{product_name}_{dup}_{image_index + 1}"
-                image_index += 1
+                image_url = row[col]
+                if not image_url:
+                    continue
+
+                total_urls += 1
 
                 # Index = position among the row's URLs, not number of
                 # successes, so a retried failure never shifts file names.
-                filename = (
-                    f"{product_name}_{image_index}"
-                    if image_index > 0
-                    else product_name
-                )
+                # First occurrence:  name, name_1, name_2 ...
+                # Duplicates:        name_<dup>_1, name_<dup>_2 ...
+                if dup == 0:
+                    filename = (
+                        product_name
+                        if image_index == 0
+                        else f"{product_name}_{image_index}"
+                    )
+                else:
+                    filename = f"{product_name}_{dup}_{image_index + 1}"
                 image_index += 1
 
                 if already_downloaded(images_dir, filename):
