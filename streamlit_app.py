@@ -269,21 +269,21 @@ if uploaded_file is not None:
             # Duplicate product names get a stable suffix (deterministic for a
             # given CSV, so resume still works) instead of overwriting.
             base = safe_filename(row[product_column]) or f"row_{row_index}"
-            n = name_counts.get(base, 0)
-            name_counts[base] = n + 1
-            product_name = base if n == 0 else f"{base}-{n}"
+            dup = name_counts.get(base, 0)      # 0 = first occurrence
+            name_counts[base] = dup + 1
+            product_name = base
 
             image_index = 0
 
             for col in df.columns:
-                if col == product_column:
-                    continue
-
-                image_url = row[col]
-                if not image_url:
-                    continue
-
+                ...
                 total_urls += 1
+
+                if dup == 0:
+                    filename = product_name if image_index == 0 else f"{product_name}_{image_index}"
+                else:
+                    filename = f"{product_name}_{dup}_{image_index + 1}"
+                image_index += 1
 
                 # Index = position among the row's URLs, not number of
                 # successes, so a retried failure never shifts file names.
