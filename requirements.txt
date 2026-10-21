@@ -1,4 +1,4 @@
-streamlit
+streamlit>=1.49
 requests
 pandas>=2.2
-pillow>=11
+pillow>=11.3
