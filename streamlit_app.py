@@ -174,22 +174,6 @@ def already_downloaded(images_dir, filename):
     )
 
 
-def zip_download_button(zip_path, label, where):
-    # `where` makes the widget key unique per place on the page; two widgets
-    # with the same key raise StreamlitDuplicateElementKey.
-    with open(zip_path, "rb") as f:
-        data = f.read()
-
-    st.download_button(
-        label,
-        data=data,
-        file_name=zip_path.name,
-        mime="application/zip",
-        key=f"dl_{where}_{zip_path.name}",
-        on_click="ignore",  # Streamlit >= 1.43: click doesn't trigger a rerun
-    )
-
-
 # --------------------------------------------------------------------------
 # Main page
 # --------------------------------------------------------------------------
@@ -197,21 +181,6 @@ st.title("Image Downloader")
 st.write("Upload CSV → download images → ZIP export")
 
 uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
-
-# --------------------------------------------------------------------------
-# Sidebar: the current user's last export (job id lives in the URL).
-# Shown only while no CSV is uploaded; with a CSV the main page already
-# offers the ZIP, so the same file is never offered twice.
-# --------------------------------------------------------------------------
-if uploaded_file is None:
-    job_param = st.query_params.get("job", "")
-
-    if JOB_RE.fullmatch(job_param):  # validation prevents path tricks like ../
-        last_zip = OUTPUT_DIR / f"images_{job_param}.zip"
-        if last_zip.exists():
-            with st.sidebar:
-                st.header("Your last export")
-                zip_download_button(last_zip, "Download last ZIP", "sidebar")
 
 if uploaded_file is not None:
     csv_bytes = uploaded_file.getvalue()
@@ -250,15 +219,13 @@ if uploaded_file is not None:
 
     # Same CSV content -> same job -> resumes after a crash
     job_id = hashlib.sha1(csv_bytes).hexdigest()[:12]
-    st.query_params["job"] = job_id
 
     images_dir = OUTPUT_DIR / job_id / "images"
     images_dir.mkdir(parents=True, exist_ok=True)
     zip_path = OUTPUT_DIR / f"images_{job_id}.zip"
 
     if zip_path.exists():
-        st.info("This CSV was already processed.")
-        zip_download_button(zip_path, "Download ZIP", "main")
+        st.info("This CSV was already processed. Click Start / resume to fetch missing images.")
 
     if st.button("Start / resume download"):
         progress = st.progress(0)
