@@ -1,5 +1,4 @@
 import hashlib
-import os
 import re
 import warnings
 import zipfile
@@ -41,8 +40,6 @@ Image.MAX_IMAGE_PIXELS = 80_000_000
 
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
-
-JOB_RE = re.compile(r"[0-9a-f]{12}")
 
 
 # --------------------------------------------------------------------------
@@ -320,7 +317,10 @@ if uploaded_file is not None:
             "skipped": skipped,
             "errors": error_rows,
         }
-        st.rerun()
+        # No st.rerun(): the results and the download button below are drawn
+        # in this same run, right after the ZIP is built.
+        status.empty()
+        progress.empty()
 
     # Rendered on every run, outside the button block
     stats = st.session_state.get("last_stats")
@@ -334,3 +334,21 @@ if uploaded_file is not None:
         if stats["errors"]:
             with st.expander("Errors"):
                 st.dataframe(pd.DataFrame(stats["errors"]), width="stretch")
+
+    # The ONLY download button in the app (single call site = no duplicate
+    # widget keys). It shows whenever the ZIP for this CSV exists on disk,
+    # so it appears as soon as Start / resume finishes and also when the same
+    # CSV is uploaded again after a refresh.
+    if zip_path.exists():
+        with open(zip_path, "rb") as f:
+            zip_bytes = f.read()
+
+        st.download_button(
+            "Download ZIP",
+            data=zip_bytes,
+            file_name=zip_path.name,
+            mime="application/zip",
+            type="primary",
+            key=f"download_{job_id}",
+            on_click="ignore",  # Streamlit >= 1.43: click doesn't rerun the app
+        )
