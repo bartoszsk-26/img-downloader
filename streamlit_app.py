@@ -29,12 +29,14 @@ st.set_page_config(
 st.markdown(
     """
     <style>
-    [data-testid="stDownloadButton"] button {
+    [data-testid="stDownloadButton"] button,
+    [data-testid="stButton"] button {
         background-color: #4f9a3a;
         border-color: #4f9a3a;
         color: white;
     }
-    [data-testid="stDownloadButton"] button:hover {
+    [data-testid="stDownloadButton"] button:hover,
+    [data-testid="stButton"] button:hover {
         background-color: #3f7d2e;
         border-color: #3f7d2e;
         color: white;
