@@ -1,2 +1,3 @@
 [theme]
+base = "light"    # or "dark"; leave it out to follow the system setting
 primaryColor = "#93c47d"   # green
